@@ -3,6 +3,8 @@ import cors from '@fastify/cors';
 import { connectDatabase, disconnectDatabase } from './db/client';
 import { profileRoutes } from './routes/profiles';
 import { statsRoutes } from './routes/stats';
+import { metricsRoutes } from './routes/metrics';
+import { errorHandler } from './lib/error-handler';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -29,6 +31,9 @@ async function main() {
     origin: process.env.CORS_ORIGIN || true,
   });
 
+  // Register error handler
+  fastify.setErrorHandler(errorHandler);
+
   // Health check
   fastify.get('/health', async (request, reply) => {
     reply.send({ status: 'ok', timestamp: new Date().toISOString() });
@@ -37,6 +42,7 @@ async function main() {
   // Register routes
   await fastify.register(profileRoutes, { prefix: '/api' });
   await fastify.register(statsRoutes, { prefix: '/api' });
+  await fastify.register(metricsRoutes, { prefix: '/api' });
 
   // Connect to database
   await connectDatabase();

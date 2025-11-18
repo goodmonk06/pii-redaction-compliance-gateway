@@ -10,46 +10,216 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model RedactionProfile {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  description String?
-  rulesJson   Json     // Configuration for what to detect and how to mask
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  detectionRules DetectionRule[]
-  redactionRuns  RedactionRun[]
-
-  @@map("redaction_profiles")
-}
-
-model DetectionRule {
-  id           String  @id @default(cuid())
-  profileId    String
-  fieldPattern String  // Regex or glob pattern to match field names (e.g., "email", "*_email", "user.*.email")
-  type         String  // "email" | "phone" | "name" | "ssn" | "credit_card" | "custom"
-  maskStyleJson Json   // { "strategy": "full|partial|hash", "char": "*", "preserveLength": true }
-  enabled      Boolean @default(true)
-
-  profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
-
+// Multi-tenancy and access control
+model Organization {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  plan      String   @default("free") // "free" | "pro" | "enterprise"
+  settings  Json     @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  users              User[]
+  redactionProfiles  RedactionProfile[]
+  apiKeys            ApiKey[]
+  auditLogs          AuditLog[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String?
+  role           String   @default("member") // "admin" | "member" | "viewer"
+  organizationId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  auditLogs    AuditLog[]
+  createdProfiles RedactionProfile[] @relation("ProfileCreator")
+
+  @@map("users")
+  @@index([organizationId])
+}
+
+model ApiKey {
+  id             String   @id @default(cuid())
+  key            String   @unique // Hashed API key
+  name           String
+  organizationId String
+  profileId      String?  // Optional: scope to specific profile
+  permissions    Json     @default("[]") // ["redact", "create_profile", "read_stats"]
+  rateLimit      Int      @default(1000) // Requests per hour
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  profile      RedactionProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+
+  @@map("api_keys")
+  @@index([organizationId])
+  @@index([key])
+}
+
+// Core redaction entities
+model RedactionProfile {
+  id             String   @id @default(cuid())
+  name           String
+  description    String?
+  organizationId String
+  createdById    String?  // User who created this profile
+  rulesJson      Json     // Configuration for what to detect and how to mask
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy      User?             @relation("ProfileCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  detectionRules DetectionRule[]
+  redactionRuns  RedactionRun[]
+  apiKeys        ApiKey[]
+  webhooks       Webhook[]
+  batchJobs      BatchRedactionJob[]
+
+  @@map("redaction_profiles")
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model DetectionRule {
+  id            String  @id @default(cuid())
+  profileId     String
+  fieldPattern  String  // Regex or glob pattern to match field names
+  type          String  // "email" | "phone" | "name" | "ssn" | "credit_card" | "custom"
+  maskStyleJson Json    // { "strategy": "full|partial|hash", "char": "*", "preserveLength": true }
+  priority      Int     @default(0) // Higher priority rules evaluated first
+  enabled       Boolean @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
   @@map("detection_rules")
+  @@index([profileId])
 }
 
 model RedactionRun {
   id               String   @id @default(cuid())
   profileId        String
-  inputSampleJson  Json     // Sample of input data (first 1000 chars or sanitized)
-  outputSampleJson Json     // Sample of output data (first 1000 chars)
+  apiKeyId         String?  // Track which API key was used
+  inputSampleJson  Json     // Sample of input data
+  outputSampleJson Json     // Sample of output data
   statsJson        Json     // { "totalFields": 10, "redactedFields": 3, "detections": [{field, type}] }
+  durationMs       Int?     // Execution time in milliseconds
+  ipAddress        String?  // Client IP for audit trail
+  userAgent        String?  // Client user agent
   createdAt        DateTime @default(now())
 
   profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@map("redaction_runs")
   @@index([profileId, createdAt])
+  @@index([createdAt])
+}
+
+// Webhooks for event notifications
+model Webhook {
+  id          String   @id @default(cuid())
+  profileId   String
+  url         String
+  events      Json     @default("[]") // ["redaction.completed", "detection.found"]
+  secret      String?  // For signature verification
+  isActive    Boolean  @default(true)
+  lastSuccess DateTime?
+  lastFailure DateTime?
+  failureCount Int     @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@map("webhooks")
+  @@index([profileId])
+}
+
+// Template library for reusable rule sets
+model RedactionTemplate {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  category    String   @default("general") // "general" | "healthcare" | "finance" | "legal"
+  rulesJson   Json     // Reusable rules configuration
+  isPublic    Boolean  @default(false)
+  usageCount  Int      @default(0) // Track how many times it's been used
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("redaction_templates")
+  @@index([isPublic])
+  @@index([category])
+}
+
+// Batch processing for large-scale redactions
+model BatchRedactionJob {
+  id          String   @id @default(cuid())
+  profileId   String
+  status      String   @default("pending") // "pending" | "processing" | "completed" | "failed"
+  inputUrl    String?  // S3 URL or file path
+  outputUrl   String?  // Where results are stored
+  statsJson   Json     @default("{}")
+  errorMessage String?
+  progress    Int      @default(0) // 0-100
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@map("batch_redaction_jobs")
+  @@index([profileId, status])
+  @@index([createdAt])
+}
+
+// Analytics and detection history
+model DetectionHistory {
+  id           String   @id @default(cuid())
+  fieldPath    String   // e.g., "user.email", "payment.cardNumber"
+  piiType      String   // Type of PII detected
+  frequency    Int      @default(1) // How many times seen
+  lastSeenAt   DateTime @default(now())
+  firstSeenAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("detection_history")
+  @@unique([fieldPath, piiType])
+  @@index([piiType])
+  @@index([lastSeenAt])
+}
+
+// Audit logging for compliance
+model AuditLog {
+  id           String   @id @default(cuid())
+  organizationId String
+  userId       String?
+  action       String   // "profile.created", "redaction.performed", "api_key.generated"
+  resourceType String   // "profile" | "api_key" | "webhook"
+  resourceId   String?
+  changes      Json?    // Before/after snapshots
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+  @@index([organizationId, createdAt])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
 }
