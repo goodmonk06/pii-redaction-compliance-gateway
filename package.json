@@ -1,0 +1,27 @@
+{
+  "name": "pii-redaction-compliance-gateway",
+  "version": "1.0.0",
+  "description": "A PII redaction gateway for detecting and masking sensitive data in JSON payloads",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=packages/backend",
+    "dev:dashboard": "npm run dev --workspace=packages/dashboard",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose build"
+  },
+  "keywords": [
+    "pii",
+    "redaction",
+    "compliance",
+    "gdpr",
+    "data-privacy"
+  ],
+  "author": "",
+  "license": "MIT"
+}

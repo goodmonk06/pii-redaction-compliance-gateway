@@ -1,0 +1,55 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model RedactionProfile {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  rulesJson   Json     // Configuration for what to detect and how to mask
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  detectionRules DetectionRule[]
+  redactionRuns  RedactionRun[]
+
+  @@map("redaction_profiles")
+}
+
+model DetectionRule {
+  id           String  @id @default(cuid())
+  profileId    String
+  fieldPattern String  // Regex or glob pattern to match field names (e.g., "email", "*_email", "user.*.email")
+  type         String  // "email" | "phone" | "name" | "ssn" | "credit_card" | "custom"
+  maskStyleJson Json   // { "strategy": "full|partial|hash", "char": "*", "preserveLength": true }
+  enabled      Boolean @default(true)
+
+  profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("detection_rules")
+}
+
+model RedactionRun {
+  id               String   @id @default(cuid())
+  profileId        String
+  inputSampleJson  Json     // Sample of input data (first 1000 chars or sanitized)
+  outputSampleJson Json     // Sample of output data (first 1000 chars)
+  statsJson        Json     // { "totalFields": 10, "redactedFields": 3, "detections": [{field, type}] }
+  createdAt        DateTime @default(now())
+
+  profile RedactionProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@map("redaction_runs")
+  @@index([profileId, createdAt])
+}
